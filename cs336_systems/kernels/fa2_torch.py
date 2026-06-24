@@ -7,7 +7,7 @@ class FA2(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V, is_causal=False):
         b_q = 16
-        b_k = 32
+        b_k = 16
 
         batch_size = Q.shape[0]
         d = Q.shape[-1]
@@ -25,7 +25,6 @@ class FA2(torch.autograd.Function):
             k = k.split(b_k, dim=0)
             v = v.split(b_k, dim=0)
 
-
             for i in range(t_q):
                 q_i = q[i]
                 o_i = torch.zeros(b_q, d, dtype=torch.float32, device=Q.device)
@@ -36,11 +35,16 @@ class FA2(torch.autograd.Function):
                     v_j = v[j]
                     s_i_j = q_i @ k_j.T / sqrt_d
                     s_i_j = s_i_j.to(torch.float32)
+                    if is_causal:
+                        q_index = torch.arange(0, b_q) + i * b_q
+                        k_index = torch.arange(0, b_k) + j * b_k
+                        mask = q_index[:, None] >= k_index[None, :]
+                        s_i_j.masked_fill_(~mask, -1e6)
+
                     m_i_j = torch.maximum(m_i, torch.max(s_i_j, dim=-1).values)
                     p_i_j = torch.exp(s_i_j - m_i_j[:, None])
                     l_i_j = torch.exp(m_i - m_i_j) * l_i + torch.sum(p_i_j, dim=-1)
                     o_i_j = o_i * torch.exp(m_i - m_i_j)[:, None] + p_i_j @ v_j.to(torch.float32)
-
                     o_i = o_i_j
                     l_i = l_i_j
                     m_i = m_i_j
@@ -50,8 +54,38 @@ class FA2(torch.autograd.Function):
                 O[b, i * b_q : i * b_q + b_q, :] = o_i
                 L[b, i * b_q : i * b_q + b_q] = l_i
         ctx.save_for_backward(Q, K, V, O, L)
+        ctx.is_causal = is_causal
         return O.to(Q.dtype)
 
     @staticmethod
     def backward(ctx, grad_output):
-        raise NotImplementedError
+        Q, K, V, O, L = ctx.saved_tensors
+
+        d = Q.shape[-1]
+        sqrt_d = math.sqrt(d)
+
+        S = Q @ K.mT
+        S = S / sqrt_d
+
+        P = torch.exp(S - L.unsqueeze(-1))
+        dV = P.mT @ grad_output
+
+        dP = grad_output @ V.mT
+
+        D = torch.sum(P * dP, dim=-1, keepdim=True)
+
+        dS = P * (dP - D)
+
+        dQ = dS @ K / sqrt_d
+
+        dK = dS.mT @ Q / sqrt_d
+
+        return dQ, dK, dV, None
+
+
+if __name__ == "__main__":
+    Q = torch.arange(0, 1 * 16 * 32, dtype=torch.float32).reshape(1, 16, 32).to("cuda")
+    K = torch.arange(0 + 100, 1 * 16 * 32 + 100, dtype=torch.float32).reshape(1, 16, 32).to("cuda")
+    V = torch.arange(0 - 100, 1 * 16 * 32 - 100, dtype=torch.float32).reshape(1, 16, 32).to("cuda")
+    o = FA2.apply(Q, K, V, False)
+    print("o[0, 0, :] = ", o[0, 0, :])

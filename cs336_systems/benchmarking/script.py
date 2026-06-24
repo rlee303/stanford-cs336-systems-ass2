@@ -21,7 +21,7 @@ import torch
 @click.option("--d-ff", "-f", type=int, required=True)
 @click.option("--heads", "-h", type=int, required=True)
 @click.option("--layers", "-l", type=int, required=True)
-@click.option("--device", type=str, default="mps")
+@click.option("--device", type=str, default="cuda")
 @click.option("--warm-up", type=int, default=5)
 def run(vocab_size: int, batch_size: int, seq_len: int, steps: int, data_set: str, d_model: int, d_ff: int, heads: int, layers: int, device: str, warm_up: int):
     lm = BasicsTransformerLM(vocab_size, seq_len, d_model, layers, heads, d_ff).to(device)
@@ -36,16 +36,16 @@ def run(vocab_size: int, batch_size: int, seq_len: int, steps: int, data_set: st
         step_times["start"] = timeit.default_timer()
 
         res = lm(batch[0])
-        torch.mps.synchronize()
+        torch.cuda.synchronize()
         step_times["forward"] = timeit.default_timer()
 
         loss = nn_utils.cross_entropy(res, batch[1])
         loss.backward()
-        torch.mps.synchronize()
+        torch.cuda.synchronize()
         step_times["backward"] = timeit.default_timer()
 
         optim.step()
-        torch.mps.synchronize()
+        torch.cuda.synchronize()
         step_times["optim"] = timeit.default_timer()
         times.append(step_times)
         print("Step: ", i)
